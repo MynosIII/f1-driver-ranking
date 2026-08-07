@@ -36,6 +36,11 @@ class Entry:
     driver_uncertainty: float = 0.25
     car_uncertainty: float = 0.20
     team_uncertainty: float = 0.18
+    driver_id: str | None = None
+
+    @property
+    def identity(self) -> str:
+        return self.driver_id or self.driver
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +56,8 @@ class HistoricalContext:
     safety_car_laps: int = 0
     red_flags: int = 0
     circuit_features: Mapping[str, float] = field(default_factory=dict)
+    circuit_id: str = "unknown"
+    weather_source: str = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,4 +66,3 @@ class SimulationConfig:
     seed: int = 20210731
     neutral_reference: NeutralReference = NeutralReference.SEASON_GRID_AVERAGE
     mode: AnalysisMode = AnalysisMode.CROSS_FITTED
-

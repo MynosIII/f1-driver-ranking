@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "historical-xw"
-version = "0.1.0"
-description = "Historical Formula 1 driver-car-team win attribution"
+version = "0.2.0"
+description = "Historical Formula 1 xW/xP attribution and driver ranking"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

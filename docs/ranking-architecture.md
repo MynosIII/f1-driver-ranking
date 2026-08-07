@@ -22,9 +22,9 @@ flowchart LR
     D --> G
     E --> G
     F --> G
-    G --> H["Full pre-race xW for every entry"]
+    G --> H["Context-conditioned xW and xP for every entry"]
     G --> I["Shapley attribution and neutral counterfactuals"]
-    H --> J["Observed race winner"]
+    H --> J["Observed winner and normalized finish"]
     J --> K["xW-adjusted score update"]
     I --> L["Driver, car, and team diagnostics"]
     K --> M["Race-by-race driver rating history"]
@@ -35,15 +35,20 @@ flowchart LR
 For driver `i` in race `r`:
 
 ```text
-surprise(i,r) = observed_win(i,r) - xW(i,r)
-delta(i,r)    = K * surprise(i,r)
-rating_after  = rating_before + delta(i,r)
+win_surprise(i,r) = observed_win(i,r) - xW(i,r)
+finish_score(i,r) = 1 - (position - 1) / (field_size - 1)
+performance_surprise(i,r) = finish_score(i,r) - xP(i,r)
+
+delta(i,r) = 32 * win_surprise
+           + 24 * performance_surprise
+           +  8 * teammate-controlled surprise
 ```
 
 This replaces the legacy linear car bonus with the richer xW expectation. A driver who
 wins with `xW = 0.80` gains `0.20K`; a driver who wins with `xW = 0.10` gains `0.90K`.
 A heavily favored driver who loses is penalized more than an outsider. Since xW and the
-winner indicator both sum to one across a race, the updates sum to zero.
+winner indicator both sum to one across a race, the unfiltered win residual is zero-sum.
+The final driver ledger is not zero-sum when non-driver failures are excluded.
 
 The career view retains the legacy prime/stability idea:
 
@@ -58,6 +63,10 @@ career_rating = 1500 + experience * (career_raw - 1500)
 All constants are explicit in `RankingConfig`; none are learned from the target race.
 The published `score_0_100` is only a presentation scale within the selected population.
 
+Mechanical failures, DNS results, and ambiguous retirements receive no driver update.
+Crashes, collisions, and disqualifications receive driver-attributable zero performance.
+This deliberately makes the driver ledger non-zero-sum when the car removes an opportunity.
+
 ## Legacy research mapped into the maintained package
 
 | Legacy source | Useful idea | Combined destination |
@@ -65,10 +74,10 @@ The published `score_0_100` is only a presentation scale within the selected pop
 | `CarConstructor.py` | Constructor pace plus mechanical reliability | `XcW` and `XtW` capability priors |
 | `ELO.py`, `elo2.py`, `ELo3.py` | Dynamic rating, multi-opponent expectation, prime, stabilization | `historical_xw.ranking` |
 | `ELo3.py` | Mechanical failures excluded from driver blame | XcW/XtW outcome attribution and data-quality rules |
-| `ELo3.py` | Overperformance versus car | xW win surprise and neutral-driver counterfactual |
-| `ELo3.py` | Teammate dominance | planned secondary finish-performance signal |
+| `ELo3.py` | Overperformance versus car | xW win surprise and xP performance surprise |
+| `ELo3.py` | Teammate dominance | teammate-controlled xP residual |
 | `IAf1.py` | PCA exploration of composite metrics | optional sensitivity analysis, not the canonical score |
-| `Grafico.py` | Driver rating history visualization | planned report/dashboard view |
+| `Grafico.py` | Driver rating history visualization | maintained interactive `plot-ratings` output |
 
 The large CSVs under `E:\F1` are generated research artifacts. They are not copied into
 Git; the maintained pipeline should reproduce canonical Parquet/CSV outputs from source
@@ -78,8 +87,8 @@ records and record the configuration used.
 
 - Only information available before the target race may contribute to its xW.
 - Full-race `XW`, not a same-race result feature, is the expectation in the update.
-- A win-based score alone cannot measure excellent P2-P20 performances. The next stage
-  should add a separately validated finish/gap and teammate signal from the legacy model.
+- xP measures P2-P20 performance; historical time gaps remain an optional future
+  enrichment because complete, comparable gap coverage does not exist across all eras.
 - Mechanical, driver-fault, and operational failures need source-backed classification;
   ambiguous retirements should carry uncertainty instead of automatic blame.
 - Era comparisons require calibration checks by era and leave-one-season-out backtests.

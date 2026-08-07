@@ -3,7 +3,7 @@ project:
   data_directory: data
   cache_directory: data/cache
 history:
-  start_season: 2018
+  start_season: 1950
   end_season: 2025
   sessions: [FP2, FP3, Q, S, R]
 pilot:
@@ -21,6 +21,14 @@ model:
   monte_carlo_runs: 20000
   posterior_draws: 1000
   cross_fit_target_race: true
+  circuit_history_races: 8
+  circuit_recency_decay: 0.65
+  win_rating_k: 32
+  performance_rating_k: 24
+  teammate_rating_k: 8
+weather:
+  provider: open_meteo_era5
+  track_temperature_fallback: air_temperature_proxy
 output:
   save_parquet: true
   save_csv: true
