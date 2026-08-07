@@ -1,0 +1,28 @@
+project:
+  random_seed: 42
+  data_directory: data
+  cache_directory: data/cache
+history:
+  start_season: 2018
+  end_season: 2025
+  sessions: [FP2, FP3, Q, S, R]
+pilot:
+  season: 2024
+  event: British Grand Prix
+telemetry:
+  microsegment_metres: 5
+  minimum_clean_lap_ratio: 0.97
+  smoothing_window: 21
+  curvature_threshold: 0.0015
+  minimum_corner_length_metres: 15
+model:
+  neutral_reference: season_grid_average
+  hierarchical_method: mixed_effects
+  monte_carlo_runs: 20000
+  posterior_draws: 1000
+  cross_fit_target_race: true
+output:
+  save_parquet: true
+  save_csv: true
+  save_duckdb: true
+  build_html_report: true

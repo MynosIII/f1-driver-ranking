@@ -1,0 +1,11 @@
+{
+  "historical_only": true,
+  "analysis_mode": "cross_fitted",
+  "neutral_reference": "season_grid_average",
+  "microsegment_metres": 5.0,
+  "simulations": 20000,
+  "seed": 20210731,
+  "decomposition_tolerance": 1e-10,
+  "cache_sources": ["fastf1", "openf1", "jolpica", "manual_technical_updates"]
+}
+
