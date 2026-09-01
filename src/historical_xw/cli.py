@@ -10,7 +10,8 @@ from .decomposition import decompose_event
 from .domain import AnalysisMode, SimulationConfig
 from .example import hungary_2021
 from .storage import AnalyticalStore
-from .real_pipeline import analyze_season, ingest_fastf1_pilot
+from .plotting import plot_rating_history
+from .real_pipeline import analyze_history, analyze_season, ingest_fastf1_pilot
 from .ranking import RankingConfig, build_driver_ranking
 
 
@@ -62,7 +63,12 @@ def _rank_drivers(args: argparse.Namespace) -> None:
     ]
     ranking, history = build_driver_ranking(
         pd.concat(frames, ignore_index=True),
-        RankingConfig(k_factor=args.k_factor, prime_races=args.prime_races),
+        RankingConfig(
+            k_factor=args.k_factor,
+            performance_k_factor=args.performance_k_factor,
+            teammate_k_factor=args.teammate_k_factor,
+            prime_races=args.prime_races,
+        ),
     )
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -71,6 +77,18 @@ def _rank_drivers(args: argparse.Namespace) -> None:
     history.to_parquet(output / "driver_rating_history.parquet", index=False)
     history.to_csv(output / "driver_rating_history.csv", index=False)
     print(ranking.head(args.limit).to_string(index=False))
+
+
+def _plot_ratings(args: argparse.Namespace) -> None:
+    source = Path(args.input)
+    history = pd.read_parquet(source) if source.suffix.lower() == ".parquet" else pd.read_csv(source)
+    path = plot_rating_history(
+        history,
+        Path(args.output),
+        minimum_races=args.minimum_races,
+        drivers=args.driver or None,
+    )
+    print(path)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -106,20 +124,31 @@ def build_parser() -> argparse.ArgumentParser:
     season.add_argument("--season", type=int, default=2024)
     season.add_argument("--simulations", type=int, default=2000)
     season.add_argument("--no-resume", action="store_true")
-    season.set_defaults(func=lambda a: print(analyze_season(a.season, Path(a.output), a.simulations, not a.no_resume).groupby("event")["XW"].sum().describe()))
+    season.add_argument("--no-weather", action="store_true")
+    season.set_defaults(func=lambda a: print(analyze_season(a.season, Path(a.output), a.simulations, not a.no_resume, not a.no_weather).groupby("event")["XW"].sum().describe()))
     history = sub.add_parser("run-history")
     history.add_argument("--output", default="data")
-    history.add_argument("--from-season", type=int, default=2018)
+    history.add_argument("--from-season", type=int, default=1950)
     history.add_argument("--to-season", type=int, default=2025)
-    history.add_argument("--simulations", type=int, default=2000)
-    history.set_defaults(func=lambda a: [analyze_season(year, Path(a.output), a.simulations, True) for year in range(a.from_season, a.to_season + 1)])
+    history.add_argument("--simulations", type=int, default=500)
+    history.add_argument("--no-resume", action="store_true")
+    history.add_argument("--no-weather", action="store_true")
+    history.set_defaults(func=lambda a: print(analyze_history(a.from_season, a.to_season, Path(a.output), a.simulations, not a.no_resume, not a.no_weather).groupby("season")["XW"].sum().describe()))
     ranking = sub.add_parser("rank-drivers")
     ranking.add_argument("--input", default="data/outputs/race_xw_*.parquet")
     ranking.add_argument("--output", default="data/outputs")
     ranking.add_argument("--k-factor", type=float, default=32.0)
+    ranking.add_argument("--performance-k-factor", type=float, default=24.0)
+    ranking.add_argument("--teammate-k-factor", type=float, default=8.0)
     ranking.add_argument("--prime-races", type=int, default=60)
     ranking.add_argument("--limit", type=int, default=20)
     ranking.set_defaults(func=_rank_drivers)
+    plot = sub.add_parser("plot-ratings")
+    plot.add_argument("--input", default="data/outputs/driver_rating_history.parquet")
+    plot.add_argument("--output", default="data/outputs/driver_rating_history.html")
+    plot.add_argument("--minimum-races", type=int, default=25)
+    plot.add_argument("--driver", action="append", help="Repeat to select individual drivers")
+    plot.set_defaults(func=_plot_ratings)
     return parser
 
 

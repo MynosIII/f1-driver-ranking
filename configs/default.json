@@ -6,6 +6,12 @@
   "simulations": 20000,
   "seed": 20210731,
   "decomposition_tolerance": 1e-10,
-  "cache_sources": ["fastf1", "openf1", "jolpica", "manual_technical_updates"]
+  "cache_sources": ["fastf1", "openf1", "jolpica", "open_meteo_era5", "manual_technical_updates"],
+  "history_start_season": 1950,
+  "history_end_season": 2025,
+  "circuit_history_races": 8,
+  "circuit_recency_decay": 0.65,
+  "win_rating_k": 32.0,
+  "performance_rating_k": 24.0,
+  "teammate_rating_k": 8.0
 }
-
