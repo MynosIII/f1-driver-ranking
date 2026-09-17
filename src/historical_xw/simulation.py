@@ -67,3 +67,84 @@ def monte_carlo_wins(
         entry.driver: (float(prob), float(max(0, prob - 1.96 * err)), float(min(1, prob + 1.96 * err)))
         for entry, prob, err in zip(entries, p, se, strict=True)
     }
+
+
+def _sample_full_order(entries: list[Entry], context: HistoricalContext, coalition: Coalition, rng: np.random.Generator) -> list[int]:
+    """One Plackett-Luce draw of a complete finishing order: repeatedly pick
+    a winner among whoever's left (same softmax as ``coalition_probabilities``),
+    remove them, repeat. Returns indices into ``entries``, best-to-worst.
+    """
+    remaining = list(range(len(entries)))
+    order: list[int] = []
+    while remaining:
+        subset = [entries[i] for i in remaining]
+        probabilities = np.asarray(list(coalition_probabilities(subset, context, coalition).values()))
+        pick = rng.choice(len(remaining), p=probabilities)
+        order.append(remaining.pop(pick))
+    return order
+
+
+def monte_carlo_full_ranking(
+    entries: list[Entry],
+    context: HistoricalContext,
+    config: SimulationConfig,
+    coalition: Coalition | None = None,
+    resample_capabilities: bool = True,
+) -> dict[str, tuple[float, float, float]]:
+    """Expected finishing percentile (1.0 = always wins, 0.0 = always last)
+    for every entry, from full Plackett-Luce order sampling rather than
+    just a winner draw -- the position-based analogue of ``monte_carlo_wins``.
+
+    ``resample_capabilities=False`` skips the capability-uncertainty
+    resampling (used for the seven reduced coalitions in a Shapley
+    decomposition, where a point estimate is wanted, not a confidence
+    interval); ``True`` (the default) matches ``monte_carlo_wins``'s
+    behavior for the full coalition.
+    """
+    coalition = coalition if coalition is not None else frozenset(Component)
+    rng = np.random.default_rng(config.seed)
+    n = len(entries)
+    total = np.zeros(n)
+    total_sq = np.zeros(n)
+    for _ in range(config.simulations):
+        sampled = (
+            [
+                replace(
+                    e,
+                    driver_score=float(rng.normal(e.driver_score, e.driver_uncertainty)),
+                    car_score=float(rng.normal(e.car_score, e.car_uncertainty)),
+                    team_score=float(rng.normal(e.team_score, e.team_uncertainty)),
+                )
+                for e in entries
+            ]
+            if resample_capabilities
+            else entries
+        )
+        order = _sample_full_order(sampled, context, coalition, rng)
+        for rank, idx in enumerate(order):
+            percentile = 1.0 - rank / (n - 1) if n > 1 else 1.0
+            total[idx] += percentile
+            total_sq[idx] += percentile * percentile
+    mean = total / config.simulations
+    variance = np.maximum(total_sq / config.simulations - mean**2, 0.0)
+    se = np.sqrt(variance / config.simulations)
+    return {
+        entry.driver: (float(m), float(max(0.0, m - 1.96 * s)), float(min(1.0, m + 1.96 * s)))
+        for entry, m, s in zip(entries, mean, se, strict=True)
+    }
+
+
+def all_coalitions_expected_percentile(
+    entries: list[Entry], context: HistoricalContext, config: SimulationConfig
+) -> dict[Coalition, dict[str, float]]:
+    """Point-estimate expected finishing percentile for all eight coalitions
+    (no capability resampling -- these feed the Shapley decomposition, which
+    needs point values, not intervals; the full coalition's own uncertainty
+    is separately quantified by ``monte_carlo_full_ranking``)."""
+    components = tuple(Component)
+    result: dict[Coalition, dict[str, float]] = {}
+    for mask in product((False, True), repeat=3):
+        coalition = frozenset(c for c, active in zip(components, mask, strict=True) if active)
+        percentiles = monte_carlo_full_ranking(entries, context, config, coalition, resample_capabilities=False)
+        result[coalition] = {driver: mean for driver, (mean, _, _) in percentiles.items()}
+    return result

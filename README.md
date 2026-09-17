@@ -8,6 +8,18 @@ still increases a driver's rating, while an unlikely win earns a larger increase
 See [the ranking architecture](docs/ranking-architecture.md) for the model diagram,
 legacy mapping, equations, and current limitations.
 
+**v8** (`historical_xw.ranking_v8`) extends that win-only rating to a full
+finishing-position signal (a driver who should've won but finished 15th is
+scored differently from one who finished 2nd), classifies DNF fault
+(mechanical failures excluded from the driver's rating; accidents count),
+and bootstraps each driver's starting rating from their earliest races
+instead of a flat 1500 for everyone. See
+[the v8 architecture](docs/ranking-architecture-v8.md) for the full design,
+the real bug real-data validation found in the first version of the rating
+update (and how it was fixed), and a real precondition on the rookie
+bootstrap worth knowing before trusting its output on anything but a
+full-history dataset.
+
 ## What is runnable now
 
 - Exact, independently stored XdW/XcW/XtW scores and probability-point contributions.
@@ -43,6 +55,10 @@ python -m historical_xw.cli run-pilot --season 2024 --event "British Grand Prix"
 python -m historical_xw.cli run-season --season 2024
 python -m historical_xw.cli run-history --from-season 2018 --to-season 2025
 python -m historical_xw.cli rank-drivers --input "data/outputs/race_xw_*.parquet"
+
+# v8: position-based, fault-aware, bootstrapped-rookie ranking (see docs/ranking-architecture-v8.md)
+python -m historical_xw.cli run-history-v8 --from-season 2018 --to-season 2025
+python -m historical_xw.cli rank-drivers-v8 --input "data/outputs/race_xp_*.parquet"
 ```
 
 The decomposition is written to `data/outputs/race_decompositions.parquet`; `data/outputs/historical_xw.duckdb` exposes it as `race_decompositions`.

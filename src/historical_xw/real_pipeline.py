@@ -13,7 +13,7 @@ import requests
 from jinja2 import Template
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from .decomposition import decompose_event
+from .decomposition import decompose_event, decompose_event_v8
 from .domain import Entry, HistoricalContext, SimulationConfig
 
 
@@ -124,6 +124,45 @@ def analyze_season(season: int, root: Path, simulations: int = 2000, resume: boo
     results.to_parquet(root / "processed" / f"results_{season}.parquet", index=False)
     build_database(root, events, results, scored, final)
     build_report(root, season, final)
+    return final
+
+
+def analyze_season_v8(season: int, root: Path, simulations: int = 2000, resume: bool = True) -> pd.DataFrame:
+    """Position-based (XP), fault-aware analogue of ``analyze_season``.
+    Uses the same real Jolpica results and the same leakage-safe cross-fitted
+    driver/car/team priors -- only the decomposition target changes (XP
+    instead of XW), and ``status``/``position`` are carried through so
+    ``ranking_v8.calculate_rating_history_v8`` can classify DNF fault.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    client = JolpicaClient(root / "cache" / "jolpica")
+    events, results = client.season_results(season)
+    scored = cross_fitted_scores(results)
+    output_path = root / "outputs" / f"race_xp_{season}.parquet"
+    completed: set[int] = set()
+    previous = pd.DataFrame()
+    if resume and output_path.exists():
+        previous = pd.read_parquet(output_path)
+        completed = set(previous["round"].unique())
+    rows = []
+    for rnd, race in scored.groupby("round", sort=True):
+        if rnd in completed:
+            continue
+        entries = [Entry(r.driver, r.constructor, r.constructor, int(r.grid or 20), float(r.XdW_score), float(r.XcW_score), float(r.XtW_score), .35, .30, .30) for r in race.itertuples()]
+        decomposed = decompose_event_v8(entries, _context(race.iloc[0]), SimulationConfig(simulations=simulations, seed=season * 100 + int(rnd)))
+        result_by_driver = results.loc[results["round"] == rnd].set_index("driver")
+        car_score_by_driver = race.set_index("driver")["XcW_score"].to_dict()
+        for item in decomposed:
+            item["round"] = int(rnd)
+            item["source"] = "jolpica_cross_fitted"
+            item["position"] = int(result_by_driver.loc[item["driver"], "position"])
+            item["status"] = str(result_by_driver.loc[item["driver"], "status"])
+            item["XcW_score"] = car_score_by_driver[item["driver"]]
+        rows.extend(decomposed)
+    final = pd.concat([previous, pd.DataFrame(rows)], ignore_index=True) if not previous.empty else pd.DataFrame(rows)
+    (root / "outputs").mkdir(parents=True, exist_ok=True)
+    final.to_parquet(output_path, index=False)
+    final.to_csv(output_path.with_suffix(".csv"), index=False)
     return final
 
 

@@ -10,8 +10,9 @@ from .decomposition import decompose_event
 from .domain import AnalysisMode, SimulationConfig
 from .example import hungary_2021
 from .storage import AnalyticalStore
-from .real_pipeline import analyze_season, ingest_fastf1_pilot
+from .real_pipeline import analyze_season, analyze_season_v8, ingest_fastf1_pilot
 from .ranking import RankingConfig, build_driver_ranking
+from .ranking_v8 import RankingConfigV8, build_driver_ranking_v8
 
 
 def _run_example(args: argparse.Namespace) -> pd.DataFrame:
@@ -46,6 +47,28 @@ def _run_real_pilot(args: argparse.Namespace) -> None:
     pilot.to_csv(target.with_suffix(".csv"), index=False)
     print(counts)
     print(pilot[["driver", "XW", "XdW_probability_contribution", "XcW_probability_contribution", "XtW_probability_contribution", "observed_winner"]].head(10).to_string(index=False))
+
+
+def _rank_drivers_v8(args: argparse.Namespace) -> None:
+    source = Path(args.input)
+    paths = [source] if source.is_file() else sorted(source.parent.glob(source.name))
+    if not paths:
+        raise FileNotFoundError(f"No ranking inputs matched: {args.input}")
+    frames = [
+        pd.read_parquet(path) if path.suffix.lower() == ".parquet" else pd.read_csv(path)
+        for path in paths
+    ]
+    ranking, history = build_driver_ranking_v8(
+        pd.concat(frames, ignore_index=True),
+        RankingConfigV8(k_factor=args.k_factor, prime_races=args.prime_races, rookie_bootstrap_races=args.rookie_bootstrap_races),
+    )
+    output = Path(args.output)
+    output.mkdir(parents=True, exist_ok=True)
+    ranking.to_parquet(output / "driver_ranking_v8.parquet", index=False)
+    ranking.to_csv(output / "driver_ranking_v8.csv", index=False)
+    history.to_parquet(output / "driver_rating_history_v8.parquet", index=False)
+    history.to_csv(output / "driver_rating_history_v8.csv", index=False)
+    print(ranking.head(args.limit).to_string(index=False))
 
 
 def _rank_drivers(args: argparse.Namespace) -> None:
@@ -120,6 +143,27 @@ def build_parser() -> argparse.ArgumentParser:
     ranking.add_argument("--prime-races", type=int, default=60)
     ranking.add_argument("--limit", type=int, default=20)
     ranking.set_defaults(func=_rank_drivers)
+
+    season_v8 = sub.add_parser("run-season-v8")
+    season_v8.add_argument("--output", default="data")
+    season_v8.add_argument("--season", type=int, default=2024)
+    season_v8.add_argument("--simulations", type=int, default=2000)
+    season_v8.add_argument("--no-resume", action="store_true")
+    season_v8.set_defaults(func=lambda a: print(analyze_season_v8(a.season, Path(a.output), a.simulations, not a.no_resume).groupby("event")["XP"].sum().describe()))
+    history_v8 = sub.add_parser("run-history-v8")
+    history_v8.add_argument("--output", default="data")
+    history_v8.add_argument("--from-season", type=int, default=2018)
+    history_v8.add_argument("--to-season", type=int, default=2025)
+    history_v8.add_argument("--simulations", type=int, default=2000)
+    history_v8.set_defaults(func=lambda a: [analyze_season_v8(year, Path(a.output), a.simulations, True) for year in range(a.from_season, a.to_season + 1)])
+    ranking_v8 = sub.add_parser("rank-drivers-v8")
+    ranking_v8.add_argument("--input", default="data/outputs/race_xp_*.parquet")
+    ranking_v8.add_argument("--output", default="data/outputs")
+    ranking_v8.add_argument("--k-factor", type=float, default=8.0)
+    ranking_v8.add_argument("--prime-races", type=int, default=60)
+    ranking_v8.add_argument("--rookie-bootstrap-races", type=int, default=5)
+    ranking_v8.add_argument("--limit", type=int, default=20)
+    ranking_v8.set_defaults(func=_rank_drivers_v8)
     return parser
 
 
