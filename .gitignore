@@ -11,3 +11,5 @@ data/interim/
 data/processed/
 data/models/
 data/outputs/
+
+*.log
