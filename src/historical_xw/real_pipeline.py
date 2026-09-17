@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -16,10 +17,28 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from .decomposition import decompose_event, decompose_event_v8
 from .domain import Entry, HistoricalContext, SimulationConfig
 
+# A full 1950-2025 run makes several hundred requests to the same host in
+# one long-running process. A companion project (F1Predictor) hit a
+# Cloudflare-level rate limit under exactly that load that did not clear
+# for several minutes -- not the seconds a simple burst limit would
+# suggest -- so this is deliberately more patient (stop_after_attempt=20,
+# up to 180s backoff) than the 5-attempt/20s-cap version this project
+# shipped with before that was known. A (connect, read) timeout tuple
+# replaces the bare 90, since a single float only reliably bounds the read
+# phase on some platforms -- the same fix applied to F1Predictor after it
+# separately lost a run to a connection-phase stall no timeout tripped on.
+_JOLPICA_MIN_INTERVAL_S = 0.4
+_last_request_at = 0.0
 
-@retry(stop=stop_after_attempt(5), wait=wait_exponential(min=1, max=20), reraise=True)
+
+@retry(stop=stop_after_attempt(20), wait=wait_exponential(min=2, max=180), reraise=True)
 def _get_json(url: str) -> dict[str, Any]:
-    response = requests.get(url, timeout=90)
+    global _last_request_at
+    wait = _JOLPICA_MIN_INTERVAL_S - (time.monotonic() - _last_request_at)
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_at = time.monotonic()
+    response = requests.get(url, timeout=(10, 90))
     response.raise_for_status()
     return response.json()
 
