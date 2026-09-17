@@ -68,8 +68,24 @@ class JolpicaClient:
                 continue
             race = races[0]
             event_rows.append({"season": season, "round": round_no, "event": race["raceName"], "date": race["date"], "circuit": race["Circuit"]["circuitName"], "source": "jolpica", "source_record_id": f"{season}-{round_no}", "ingested_at": datetime.now(UTC), "available_at": race["date"], "data_quality": "official_structure"})
+            # Early-era (pre-1990s) races occasionally list the same driver
+            # twice in one classification -- shared/relay-drive entries, a
+            # real historical practice. Every downstream consumer (the
+            # simulation's coalition_probabilities dict, keyed by driver
+            # name) assumes exactly one row per driver per race, so the
+            # second occurrence is dropped here rather than left for each
+            # consumer to rediscover independently (found the hard way: it
+            # crashed a full 1950-2025 run with a numpy array-size mismatch,
+            # the same root cause as a duplicate-driver crash this project's
+            # companion, F1Predictor, hit and fixed earlier).
+            seen_drivers: set[str] = set()
             for item in race["Results"]:
-                result_rows.append({"season": season, "round": round_no, "event": race["raceName"], "driver_id": item["Driver"]["driverId"], "driver": f'{item["Driver"]["givenName"]} {item["Driver"]["familyName"]}', "constructor": item["Constructor"]["name"], "grid": int(item["grid"]), "position": int(item["position"]), "points": float(item["points"]), "status": item["status"], "winner": int(item["position"] == "1"), "source": "jolpica", "source_record_id": f'{season}-{round_no}-{item["Driver"]["driverId"]}', "ingested_at": datetime.now(UTC), "available_at": race["date"], "data_quality": "official_classification"})
+                driver_name = f'{item["Driver"]["givenName"]} {item["Driver"]["familyName"]}'
+                if driver_name in seen_drivers:
+                    continue
+                seen_drivers.add(driver_name)
+                pos = item.get("position")
+                result_rows.append({"season": season, "round": round_no, "event": race["raceName"], "driver_id": item["Driver"]["driverId"], "driver": driver_name, "constructor": item["Constructor"]["name"], "grid": int(item["grid"]), "position": int(pos) if pos and str(pos).isdigit() else None, "points": float(item["points"]), "status": item["status"], "winner": int(pos == "1"), "source": "jolpica", "source_record_id": f'{season}-{round_no}-{item["Driver"]["driverId"]}', "ingested_at": datetime.now(UTC), "available_at": race["date"], "data_quality": "official_classification"})
         return pd.DataFrame(event_rows), pd.DataFrame(result_rows)
 
 
@@ -174,7 +190,13 @@ def analyze_season_v8(season: int, root: Path, simulations: int = 2000, resume: 
         for item in decomposed:
             item["round"] = int(rnd)
             item["source"] = "jolpica_cross_fitted"
-            item["position"] = int(result_by_driver.loc[item["driver"], "position"])
+            raw_position = result_by_driver.loc[item["driver"], "position"]
+            # None for a genuinely unclassified entry (didn't complete
+            # enough race distance) -- ranking_v8's finish-rank derivation
+            # already handles a null position (sorts after every classified
+            # finisher), so this is passed through rather than forced to
+            # int() and crashing.
+            item["position"] = int(raw_position) if pd.notna(raw_position) else None
             item["status"] = str(result_by_driver.loc[item["driver"], "status"])
             item["XcW_score"] = car_score_by_driver[item["driver"]]
         rows.extend(decomposed)
