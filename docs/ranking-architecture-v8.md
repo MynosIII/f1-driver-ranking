@@ -148,35 +148,123 @@ mean; use `rookie_bootstrap_races=0` (flat `initial_rating` for everyone,
 identical to v7's approach) if analyzing a deliberately truncated window
 where a wrong bootstrap would be worse than no bootstrap at all.
 
+## A second real bug the full run found: log-odds surprise is not zero-sum
+
+The log-odds fix above solved ceiling saturation, but introduced a
+different problem, found by actually running the full 1950-2025 dataset
+(not by inspection): **a raw percentile difference is exactly zero-sum
+across a race's field; a log-odds difference is not.** Logit is convex
+above 0.5 and concave below it, so for the actual shape of a finishing-
+order outcome distribution, `E[logit(observed_percentile)]` does not equal
+`logit(E[observed_percentile])` even when the model is well-calibrated on
+the raw-percentile scale (Jensen's inequality). Left uncorrected, this
+showed up as a **persistently positive mean surprise in nearly every one
+of 76 seasons**, and with it roughly 300 points of pure rating inflation
+from 1950 (mean post-race rating ~1512) to 2020 (~1830) -- large enough to
+be the dominant factor in a cross-era comparison, not a rounding error, and
+directly contrary to the entire point of a ranking meant to compare Fangio
+against Verstappen on equal footing.
+
+The fix: each race's log-odds surprises are re-centered to their own mean
+(over updated entries only, excluding mechanical-DNF entries the same way
+they're excluded from everything else) before the K-factor is applied.
+This restores exact zero-sum-ness by construction -- verified directly
+against the full dataset, mean `position_surprise` per season is now `~0`
+to floating-point precision for every one of 76 seasons, not approximately
+zero for most of them -- while changing nothing about *relative*
+comparisons within a race, since subtracting the same constant from every
+updated entry preserves who out- or under-performed whom exactly.
+
+## A finding this project is reporting, not fixing: sustained dominance
+
+Running the full 1950-2025 dataset surfaced something more fundamental
+than a bug: **Michael Schumacher (91 real career wins, unambiguously one
+of the greatest drivers ever) ranked 801st of 817 real drivers**, with a
+substantially negative accumulated `position_above_expected` (-44.5 over
+308 races), even after both fixes above. Diagnosis, season by season: his
+`XP` sat at 0.87-0.97 for nearly the whole of his 1994-2004 Ferrari/
+Benetton dominance -- correctly reflecting that dominance -- and his
+*actual* performance, while also excellent (0.66-0.98), fell slightly
+short of that already-near-perfect expectation in most of those seasons.
+
+This is not a saturation bug (the log-odds fix genuinely leaves room for
+surprise near the ceiling; the earlier Hamilton case proves that with a
+shorter, less extreme run of dominance). It's a property of comparing
+*any* driver against a genuinely well-calibrated, adaptive expectation:
+once a model correctly learns that a driver is exceptional, matching that
+already-exceptional bar race after race for a decade generates less
+"surprise" than a single standout season would, and any race that falls
+even slightly short of it reads as a negative. The same criticism applies
+in principle to v7's win-based system too -- XW is simply a less saturating
+scale than XP, so it showed less of this effect in the shorter 2018-2024
+test run earlier, not none of it.
+
+This is deliberately reported rather than patched: fixing it properly
+would mean redesigning how responsive the upstream cross-fitted priors
+(`real_pipeline.cross_fitted_scores`, shared with v7, predating this work)
+are to a driver's own recent excellence -- a materially larger project than
+extending win-only to position-based, DNF-fault-aware, bootstrapped
+ranking, and one this project's own architecture doc already anticipated
+needing ("era comparisons require calibration checks... leave-one-season-
+out backtests") before this v8 work began. Treat any single number this
+system produces for a career spanning a full decade of sustained
+dominance with that in mind.
+
 ## Real-data validation performed for this version
 
-Against actual Jolpica data (`analyze_season_v8` / `run-history-v8`,
-2018-2024, 149 races, 40 real drivers):
+Against the actual full historical record (`run-history-v8 --from-season
+1950 --to-season 2025`, 76 seasons, 1,150+ races, 817 real drivers):
 
-- `sum(XP)` per race matched `n/2` exactly (to floating-point tolerance)
-  for every one of 149 races -- confirms the Plackett-Luce sampling and
-  Shapley decomposition are mathematically consistent, not just unit-tested
-  in isolation.
-- Verstappen (2021-2024 dominant era) ranked #1 in both v7 and v8, on the
-  same underlying data -- the position-based signal and the fault-aware
-  DNF handling don't disagree with the win-based baseline on the case
-  that's easiest to get right.
-- The Hamilton case above was found, diagnosed, and fixed (the log-odds
-  change) through this same real-data pass, not assumed away -- and the
-  residual truncated-dataset limitation was traced to its actual
-  mechanism (the bootstrap precondition) rather than left as an
-  unexplained anomaly.
+- `sum(XP)` matched `n/2` exactly (floating-point tolerance) for every
+  race -- confirms the Plackett-Luce sampling and Shapley decomposition
+  stay mathematically consistent at full scale, not just in the smaller
+  validation run this was first checked against.
+- A genuine crash was found and fixed: 1950s-era shared/relay-drive
+  entries list the same driver twice in one race, which collided in the
+  simulation's driver-keyed probability dict and crashed Plackett-Luce
+  sampling with a numpy array-size mismatch several calls downstream of
+  the actual cause. Fixed at the source (deduplicating in
+  `JolpicaClient.season_results`), the same class of bug the companion
+  F1Predictor project hit and fixed independently, the same day, on the
+  equivalent problem.
+- The rating-inflation bug above was found, diagnosed to its exact
+  mathematical cause (Jensen's inequality on the log-odds transform), and
+  fixed (per-race re-centering) through this same full-scale run --
+  verified by re-running just the (cheap) ranking computation against the
+  already-generated race data, not by re-running the expensive simulation.
+- The sustained-dominance finding above was traced to a specific,
+  understood mechanism (an adaptive expectation that a decade of
+  excellence keeps pace with) and reported with the exact numbers that
+  surfaced it, not left as an unexplained low ranking.
+- Verstappen (233 real races, spanning his actual 2015 debut through 2025)
+  ranked #1 of 817 -- correctly bootstrapped from his real rookie season,
+  not a truncated-window artifact, since the full historical record spans
+  his actual career start.
 
 ## Known boundaries
 
-- `car_rating_scale` (40.0 default) and `k_factor` (8.0 default) were both
-  calibrated empirically against one real 2018-2024 slice, not derived
-  from first principles or validated against the full historical dataset.
-  Re-validate both once a full-history run is available.
+- `car_rating_scale` (40.0) and `k_factor` (8.0) were calibrated
+  empirically against real data (the k_factor scale specifically against
+  the full 1950-2025 run, after the log-odds change), not derived from
+  first principles. Worth re-validating if either the surprise transform
+  or the DNF-exclusion rule changes again.
 - The rookie-bootstrap car adjustment uses `XcW_score` (the same z-scored
   car-strength prior fed into the simulation) as a linear correction; it
   is not itself validated against held-out data the way the underlying
   cross-fitted priors are.
+- The bootstrap's cold-start case: a driver debuting in the *very first*
+  races of the entire dataset (1950) has no established rating hierarchy
+  to neighbor-interpolate against -- everyone's pre-race rating is still
+  the flat default at that point -- so their bootstrap is driven almost
+  entirely by the car adjustment. Confirmed on real data: mean
+  `starting_rating` for 1950s debutants (~1528) sits measurably below that
+  of 1980s+ debutants (~1615-1635), a real, bounded (roughly the first few
+  hundred drivers of the dataset) edge case rather than a broad one, and
+  the likely reason Fangio (starting_rating 1430, rank 110 of 817 despite
+  a 47% win rate) undersells his real dominance more than most other
+  legends checked. Not fixed here: a principled fix needs either a
+  non-interpolation-based cold-start prior for the sport's first N races,
+  or an external signal (pre-F1 career results) this dataset doesn't have.
 - `_context()` in `real_pipeline.py` (shared with v7, untouched by this
   work) still hardcodes a single regulation era and neutral weather for
   every race regardless of season -- a pre-existing simplification, not

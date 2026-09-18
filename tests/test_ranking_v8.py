@@ -41,6 +41,60 @@ def test_rating_update_is_zero_sum_when_nobody_is_excluded() -> None:
     assert np.isclose(history["rating_delta"].sum(), 0.0, atol=1e-10)
 
 
+def test_rating_update_is_zero_sum_for_a_larger_field_too() -> None:
+    """A 2-driver race is zero-sum by log-odds symmetry alone even without
+    re-centering (logit(p) + logit(1-p) == 0). This regression test uses a
+    5-driver field, where that symmetry does not hold and only the explicit
+    re-centering step keeps it zero-sum -- exactly the field size at which
+    this project found real, substantial rating inflation (~300 points
+    accumulated over 75 years) in the version of this function that didn't
+    re-center.
+    """
+    data = pd.DataFrame(
+        _race(
+            1,
+            [
+                ("a", "t1", 1, "Finished", 0.5),
+                ("b", "t2", 2, "Finished", 0.3),
+                ("c", "t3", 3, "Finished", 0.35),
+                ("d", "t4", 4, "Finished", 0.1),
+                ("e", "t5", 5, "Finished", 0.05),
+            ],
+        )
+    )
+    history = calculate_rating_history_v8(data, RankingConfigV8(k_factor=32.0))
+    assert np.isclose(history["rating_delta"].sum(), 0.0, atol=1e-9)
+
+
+def test_no_systematic_inflation_across_many_races() -> None:
+    """Direct regression test for the real bug: without re-centering, mean
+    rating_delta across many races was persistently positive (not just
+    occasionally, by chance), producing ~300 points of cross-era inflation
+    on the real 1950-2025 dataset. Simulates enough races with varied,
+    somewhat-miscalibrated XP (deliberately not matching the field's actual
+    order well, the realistic case) that a systematic bias would show up
+    clearly if re-centering weren't happening.
+    """
+    rng = np.random.default_rng(0)
+    rows = []
+    for r in range(200):
+        n = 5
+        xp = rng.dirichlet(np.ones(n) * 2) * n * 0.5  # unbiased-ish but noisy per-race XP
+        finish_order = rng.permutation(n)
+        for i, driver_idx in enumerate(finish_order):
+            rows.append(
+                {
+                    "season": 2000, "round": r, "event": f"Race {r}", "driver": f"d{driver_idx}",
+                    "constructor": f"t{driver_idx}", "position": i + 1, "status": "Finished",
+                    "XP": float(np.clip(xp[driver_idx], 0.02, 0.98)),
+                }
+            )
+    history = calculate_rating_history_v8(pd.DataFrame(rows), RankingConfigV8(rookie_bootstrap_races=0))
+    assert abs(history["rating_delta"].mean()) < 0.5, (
+        f"mean rating_delta {history['rating_delta'].mean():.3f} suggests systematic drift, not noise"
+    )
+
+
 def test_mechanical_dnf_is_excluded_from_the_update() -> None:
     data = pd.DataFrame(
         _race(1, [("a", "t1", 1, "Finished", 0.9), ("b", "t2", 2, "Engine", 0.5), ("c", "t3", 3, "Finished", 0.1)])
@@ -180,15 +234,32 @@ def test_saturated_expectation_still_allows_positive_surprise() -> None:
     Comparing in log-odds space (what this function actually does) fixes
     that: winning every race against a saturated 0.9+ expectation must
     still produce positive rating movement, not roughly zero.
+
+    A realistic multi-driver field, not a single-entrant "race": with only
+    one entrant, per-race re-centering (see the zero-sum test below) always
+    zeroes the result out, since there is no field to be relatively better
+    than -- that's correct, not a bug, but it means this test needs three
+    backmarkers finishing exactly as (unremarkably) expected, so the only
+    real signal in the race is "dominant" beating a saturated expectation.
     """
-    rows = [
-        {"season": 2024, "round": r, "event": f"Race {r}", "driver": "dominant", "constructor": "top_team",
-         "position": 1, "status": "Finished", "XP": 0.95}
-        for r in range(1, 11)
-    ]
+    rows = []
+    for r in range(1, 11):
+        rows.extend(
+            [
+                {"season": 2024, "round": r, "event": f"Race {r}", "driver": "dominant", "constructor": "top_team",
+                 "position": 1, "status": "Finished", "XP": 0.95},
+                {"season": 2024, "round": r, "event": f"Race {r}", "driver": "mid1", "constructor": "mid_team",
+                 "position": 2, "status": "Finished", "XP": 0.2},
+                {"season": 2024, "round": r, "event": f"Race {r}", "driver": "mid2", "constructor": "mid_team_b",
+                 "position": 3, "status": "Finished", "XP": 0.15},
+                {"season": 2024, "round": r, "event": f"Race {r}", "driver": "backmarker", "constructor": "bottom_team",
+                 "position": 4, "status": "Finished", "XP": 0.1},
+            ]
+        )
     history = calculate_rating_history_v8(pd.DataFrame(rows), RankingConfigV8(rookie_bootstrap_races=0))
-    assert (history["rating_delta"] > 0).all()
-    assert history.iloc[-1]["post_rating"] > history.iloc[0]["pre_rating"] + 5.0
+    dominant = history.query("driver == 'dominant'")
+    assert (dominant["rating_delta"] > 0).all()
+    assert dominant.iloc[-1]["post_rating"] > dominant.iloc[0]["pre_rating"] + 5.0
 
 
 def test_missing_required_column_raises() -> None:

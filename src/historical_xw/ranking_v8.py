@@ -139,6 +139,20 @@ def calculate_rating_history_v8(
     already-sky-high expectation while having unlimited room below it --
     see ``RankingConfigV8.logit_clip_epsilon``.
 
+    Each race's log-odds surprises are then re-centered to their own mean
+    (over updated entries only) before the K-factor is applied. Unlike a
+    raw percentile difference, a log-odds difference is not exactly
+    zero-sum across a race (Jensen's inequality: logit is convex above 0.5
+    and concave below it), and left uncorrected this produces a real,
+    substantial systematic bias -- found by running the actual full
+    1950-2025 dataset: a persistently positive mean surprise almost every
+    season, and with it roughly 300 points of pure rating inflation from
+    1950 to 2020, easily large enough to dominate a real cross-era
+    comparison rather than reflect one. Re-centering removes that drift by
+    construction; it changes nothing about who out- or under-performed
+    whom within a single race, since subtracting the same constant from
+    every updated entry preserves every relative comparison exactly.
+
     A DNF classified as ``MECHANICAL`` (car/team fault, via
     ``reliability.classify_status``) is excluded from that race's update
     entirely -- the driver's rating carries over unchanged, since the
@@ -161,18 +175,44 @@ def calculate_rating_history_v8(
     for _, race in decompositions.groupby(keys, sort=False, dropna=False):
         field_size = len(race)
         race = race.assign(finish_rank=_finish_rank(race)).sort_values("finish_rank", kind="stable")
-        for item in race.to_dict(orient="records"):
-            driver = str(item["driver"])
-            pre_rating = ratings.get(driver, initial_ratings.get(driver, cfg.initial_rating))
+        race_items = race.to_dict(orient="records")
+
+        # First pass: raw log-odds surprise per entry, and which entries are
+        # actually part of this race's update (mechanical DNFs aren't).
+        prepared = []
+        for item in race_items:
             category = classify_status(item.get("status"))
             observed_percentile = percentile_from_rank(int(item["finish_rank"]), field_size)
             expected = float(item["XP"])
             excluded = category == MECHANICAL
-            raw_percentile_diff = observed_percentile - expected
-            surprise = 0.0 if excluded else (
+            raw_surprise = (
                 _clipped_logit(observed_percentile, cfg.logit_clip_epsilon)
                 - _clipped_logit(expected, cfg.logit_clip_epsilon)
             )
+            prepared.append((item, category, observed_percentile, expected, excluded, raw_surprise))
+
+        # Log-odds surprise is not exactly zero-sum across a race the way a
+        # raw percentile difference is (Jensen's inequality: logit is convex
+        # above 0.5 and concave below it, so E[logit(X)] != logit(E[X]) for
+        # the actual shape of a finishing-order outcome distribution). Found
+        # the hard way, on the real 1950-2025 dataset: left uncorrected, this
+        # produced a persistent positive mean surprise almost every single
+        # season, and with it ~300 points of pure rating inflation from 1950
+        # to 2020 -- enough to be the dominant factor in a cross-era
+        # comparison, not a rounding error. Re-centering each race's
+        # surprises to their own mean (over updated entries only) removes
+        # that drift by construction while leaving every *relative*
+        # comparison between drivers in the same race exactly as it was,
+        # since subtracting a constant from everyone doesn't change who
+        # out- or under-performed whom.
+        included_surprises = [s for _, _, _, _, excluded, s in prepared if not excluded]
+        recentering = sum(included_surprises) / len(included_surprises) if included_surprises else 0.0
+
+        for item, category, observed_percentile, expected, excluded, raw_surprise in prepared:
+            driver = str(item["driver"])
+            pre_rating = ratings.get(driver, initial_ratings.get(driver, cfg.initial_rating))
+            raw_percentile_diff = observed_percentile - expected
+            surprise = 0.0 if excluded else (raw_surprise - recentering)
             delta = 0.0 if excluded else cfg.k_factor * surprise
             post_rating = pre_rating + delta
             rows.append(
